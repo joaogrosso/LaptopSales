@@ -1,0 +1,146 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import datetime
+import warnings
+warnings.filterwarnings("ignore")
+df = pd.read_csv(r'C:\Users\joao-\Desktop\Python\LaptopSales.csv')
+df.Date.head()
+df['Date'] = df.Date.str.slice(0,10,1)
+df['Date'] = df.Date.str.replace('/','-')
+df['Date'] = df.Date.str.replace(' ','')
+df['Date'] = df['Date'].loc[df.Date.str.len() >=9]
+df.Date.dropna(inplace=True)
+data = df['Date']
+df['Date'] = pd.to_datetime(df['Date'],format='%m-%d-%Y')
+df.dropna(inplace=True)
+df.info()
+df.set_index('Date',inplace=True)
+df.sort_index(inplace=True)
+df.head()
+a = df[df['customer X'] == 533579]
+a[['customer X','customer Y','store X','store Y']].nunique()
+#customer X e Y são equivalentes, o mesmo vale para store X e Y
+b = df[df['Customer Postcode'] == 'E1 6NU']
+b[b['Store Postcode']=='E2 0RY']['store X'].unique()
+#'Customer Postcode' é equivalente à 'customer X' e 'Store Postcode' é equivalente à 'store X'
+df.drop(['store Y','customer Y','Customer Postcode','Store Postcode'],axis=1,inplace=True)
+#dropando colunas redundantes
+df.sample(5).T
+fig,ax = plt.subplots(2,3,figsize=(14,16))
+sns.barplot('RAM (GB)','Retail Price',data=df,ax=ax[0,0])
+sns.barplot('Processor Speeds (GHz)','Retail Price',data=df,ax=ax[0,1])
+sns.barplot('Integrated Wireless?','Retail Price',data=df,ax=ax[1,0])
+sns.barplot('Bundled Applications?','Retail Price',data=df,ax=ax[1,1])
+sns.barplot('Screen Size (Inches)','Retail Price',data=df,ax=ax[0,2])
+sns.barplot('HD Size (GB)','Retail Price',data=df,ax=ax[1,2])
+plt.show()
+gb1= df['Retail Price'][df['RAM (GB)']==1].mean()
+gb2= df['Retail Price'][df['RAM (GB)']==2].mean()
+gb4 = df['Retail Price'][df['RAM (GB)']==4].mean()
+print(f'Laptops com 2GB de RAM custam apenas {round(((gb2/gb1)-1)*100,2)}% a mais dos com 1GB')
+print(f'Laptops com 4GB de RAM custam apenas {round(((gb4/gb2)-1)*100,2)}% a mais dos com 2GB')
+corr = df.corr()
+fig,ax =plt.subplots(figsize=(8,8))
+sns.heatmap(corr,annot=True,ax=ax)
+plt.show()
+sns.lineplot('Configuration','Retail Price',data=df)
+# nada conclusivo sobre a configuração
+sales =[]
+for i in range(1,13):
+    sales.append(len(df[df.index.month == i]))
+salesw= []
+for j in range(1,53):
+    salesw.append(len(df[df.index.week == j]))
+fig,ax= plt.subplots(1,2,figsize=(8,6))
+sns.lineplot(range(1,13),sales,ax=ax[0])
+ax[0].set_xlim(1,12)
+sns.lineplot(range(1,53),salesw,ax= ax[1])
+ax[1].set_xlim(1,52)
+ax[0].set_title('Sales per Month')
+ax[1].set_title('Sales per Week')
+# Feature Engeneering
+data = data.astype('object')
+dates = data.unique().tolist()
+total_sells = []
+for i in dates:
+    total_sells.append(len(df[df.index == i]))
+dfv = pd.DataFrame(data = {'data':dates,'total_sells':total_sells})
+dfv['data'] =  pd.to_datetime(dfv['data'])
+dfv.set_index('data',inplace=True)
+dfv.sort_index(inplace=True)
+dfv.plot()
+from sklearn.linear_model import LinearRegression
+from statsmodels.tsa.seasonal import seasonal_decompose
+from statsmodels.graphics.tsaplots import plot_acf,plot_pacf
+from statsmodels.tsa.stattools import adfuller
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+import pmdarima as pmd
+seasonal_decompose(dfv,freq=30).plot()
+plt.show()
+adf = adfuller(dfv['total_sells'])
+print(f'p-value : {adf[1]} < 0.05, portanto a serie não é estacionária')
+adf2 = adfuller(dfv['total_sells'].diff().dropna())
+print(f'p-value : {adf2[1]} < 0.05, portanto rejeitamos a hipótese de que a serie não é estacionária')
+# garantindo a estacionaridade da série
+fig,ax= plt.subplots(2,1,figsize=(6,7))
+plot_acf(dfv.diff().dropna(),ax=ax[0],zero=False)
+plot_pacf(dfv.diff().dropna(),ax=ax[1],zero=False)
+plt.show()
+# Pelas autocorrelações e decomposição acima, um modelo SARIMA(1,0,0)(0,1,0,30) se encaixaria bem
+model = pmd.auto_arima(dfv,start_p=1,max_p=3,
+                      start_q=0,max_q=2,start_d=0,max_d=2,
+                      seasonal=True,m=30,
+                      start_Q=1,max_Q=3,
+                      start_P=0,max_P=1,D=1,
+                      trace=True,
+                      error_action='ignore',  
+                      suppress_warnings=True, 
+                      stepwise=True,
+                      n_jobs=-1)
+sarimax = SARIMAX(dfv,order=(1,0,0),seasonal_order=(0,1,1,30)).fit()
+pred_sarimax = sarimax.get_prediction('2008-12-16','2008-12-30').predicted_mean
+dfv.reset_index(inplace=True)
+dfv['selled_yesterday'] = dfv['total_sells'].shift().fillna(method='bfill')
+x=dfv.drop(['total_sells','data'],axis=1)
+y=dfv['total_sells']
+xtrain,xtest= np.split(x, [int(.96 *len(x))])
+ytrain,ytest= np.split(y, [int(.96 *len(y))])
+lr = LinearRegression()
+lr.fit(xtrain,ytrain)
+pred_lr = lr.predict(xtest)
+# Model Evaluation
+from sklearn.metrics import mean_squared_log_error as msle
+def rmsle(a,b):
+    return np.sqrt(msle(a,b))*100
+fig=plt.figure(figsize=(10,8))
+sarimax.plot_diagnostics(fig=fig)
+plt.show()
+val= dfv.total_sells.iloc[350:]
+p1=plt.scatter(range(16,31),val,c='green')
+p2=plt.scatter(range(16,31),pred_sarimax,c='red')
+p3=plt.scatter(range(16,31),pred_lr,c='blue')
+plt.legend([p1,p2,p3],('real','SARIMAX','Linear Regression'))
+plt.title('Quantidade de vendas por dia(dezembro)')
+p1 = plt.plot(range(16,31),val,marker='.',color='green')
+p2 = plt.plot(range(16,31),pred_sarimax,marker='.',color='red')
+p3 = plt.plot(range(16,31),pred_lr,marker='.',color='blue')
+plt.legend([p1,p2,p3],('real','SARIMAX','Linear Regression'))
+plt.title('Quantidade de vendas por dia(dezembro)')
+print('Erro cometido no SARIMAX : '+str(rmsle(val,pred_sarimax))+'%')
+print('Erro cometido na Regressão Linear : '+str(rmsle(val,pred_lr))+'%')
+dft = pd.DataFrame(data = {'real' : val.values ,'sarimax' : pred_sarimax,'lr' : pred_lr})
+dft
+# Previsão de vendas
+prev = sarimax.get_forecast(steps=7,dynamic=True)
+previsao=prev.predicted_mean
+conf_int = prev.conf_int()
+cima = conf_int.loc[:,'upper total_sells']
+baixo = conf_int.loc[:,'lower total_sells']
+plt.plot(dfv['data'],dfv['total_sells'],label='real')
+plt.plot(previsao.index,previsao,color='r',label='previsao')
+plt.fill_between(baixo.index,baixo,cima,color='green')
+plt.xlim('2008-12','2009-01-8')
+plt.xticks(rotation=60)
+plt.title('Previsão de vendas de Laptops')
